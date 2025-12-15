@@ -1,25 +1,23 @@
-# GPU-Supergfxctl-Switch
+# Perf-Switcher-Asusctl
 
-GPU Profile switcher Gnome-Shell-Extension for ASUS laptops using Supergfxctl
+__Thanks to [chikobara](https://gitlab.com/chikobara) for the original [GPU-Switcher-Supergfxctl](https://github.com/chikobara/GPU-Switcher-Supergfxctl).__
 
-Currently tested on Arch / Gnome 46, 46 / X11, Wayland
-Supergfxctl v5.2
-asusctl v6.0
+Simple Performance Profile switcher Gnome-Shell-Extension for ASUS laptops using asusctl
 
-it supports all modes :
-Integrated, Hybrid, VFIO, AsusEgpu, AsusMuxDgpu
+Currently tested on OpenSUSE Tumbleweed ( Gnome 49 + Wayland + asusctl v6.2 )
+
+it supports my 3 modes :
+Quiet / Balanced / Performance
 
 ![screenshot example](./img/src.png)
 
 ## Use this only if you
 
-1. Have a laptop with Optimus Mux Switch and want to switch between iGPU and dGPU modes
-2. want to monitor the dGPU status
+Have a Asus laptop with asusctl installed
 
 ## Dependencies
 
 - [asusctl](https://gitlab.com/asus-linux/asusctl)
-- [supergfxctl](https://gitlab.com/asus-linux/supergfxctl)
 
 ## Installation
 
@@ -27,14 +25,14 @@ Integrated, Hybrid, VFIO, AsusEgpu, AsusMuxDgpu
 
 ### Gnome Extensions Store
 
-- Download the extension from the Store
+- ~~Download the extension from the Store~~ Haven't been added yet
 
- [<img alt="EGO page" height="70" src="https://raw.githubusercontent.com/andyholmes/gnome-shell-extensions-badge/master/get-it-on-ego.svg?sanitize=true">](https://extensions.gnome.org/extension/7018/gpu-supergfxctl-switch/)
+ [<img alt="EGO page" height="70" src="https://raw.githubusercontent.com/andyholmes/gnome-shell-extensions-badge/master/get-it-on-ego.svg?sanitize=true">](https://extensions.gnome.org/)
 
 ### Manual
 
 - clone this repo
 
     ```bash
-    cp -rf GPU-Switcher-Supergfxctl ~/.local/share/gnome-shell/extensions/gpu-switcher-supergfxctl@chikobara.github.io
+    cp -rf Perf-Switcher-Asusctl ~/.local/share/gnome-shell/extensions/perf-switcher-asusctl@rea1-ms
     ```
