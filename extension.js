@@ -11,52 +11,58 @@ import * as Util from "resource:///org/gnome/shell/misc/util.js";
 import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
 
-const GPU_PROFILE_PARAMS = {
-  Integrated: {
-    name: "Integrated",
-    iconName: "video-single-display-symbolic",
-    command: "supergfxctl -m Integrated",
+const PERF_PROFILE_PARAMS = {
+  Quiet: {
+    name: "Quiet",
+    iconName: "power-profile-power-saver-symbolic",
+    command: "asusctl profile -P Quiet",
   },
-  Hybrid: {
-    name: "Hybrid",
-    iconName: "video-joined-displays-symbolic",
-    command: "supergfxctl -m Hybrid",
+  Balanced: {
+    name: "Balanced",
+    iconName: "power-profile-balanced-symbolic",
+    command: "asusctl profile -P Balanced",
   },
-  Vfio: {
-    name: "Vfio",
-    iconName: "applications-engineering-symbolic",
-    command: "supergfxctl -m Vfio",
-  },
-  AsusEgpu: {
-    name: "AsusEgpu",
-    iconName: "display-projector-symbolic",
-    command: "supergfxctl -m AsusEgpu",
-  },
-  AsusMuxDgpu: {
-    name: "AsusMuxDgpu",
-    iconName: "drive-multidisk-symbolic",
-    command: "supergfxctl -m AsusMuxDgpu",
+  Performance: {
+    name: "Performance",
+    iconName: "power-profile-performance-symbolic",
+    command: "asusctl profile -P Performance",
   },
 };
 
 const RETRY_DELAY = 1000;
 const MAX_RETRIES = 3;
 
-const GpuProfilesToggle = GObject.registerClass(
+// DBus 配置 - 通过 busctl 和 gdbus introspect 发现
+// busctl --system list | grep asus -> xyz.ljones.Asusd
+// gdbus introspect --system --dest xyz.ljones.Asusd --object-path / -> 完整接口树
+const DBUS_NAME = "xyz.ljones.Asusd";
+const DBUS_PATH = "/xyz/ljones";
+const DBUS_INTERFACE = "xyz.ljones.Platform";
+
+// Profile 数值映射 - 通过切换 profile 并读取 PlatformProfile 属性值确认
+// asusctl profile -P Balanced && gdbus call ... Get ... PlatformProfile -> 0
+// asusctl profile -P Performance -> 1, Quiet -> 2
+const PROFILE_VALUE_MAP = {
+  0: "Balanced",
+  1: "Performance",
+  2: "Quiet",
+};
+
+const PerfProfilesToggle = GObject.registerClass(
   {
     Properties: {
       "active-profile": GObject.ParamSpec.string(
         "active-profile",
         "Active Profile",
-        "The currently active GPU profile",
+        "The currently active Perf profile",
         GObject.ParamFlags.READWRITE,
         null
       ),
     },
   },
-  class GpuProfilesToggle extends QuickMenuToggle {
-    _init(path) {
-      super._init({ title: "GPU Mode" });
+  class PerfProfilesToggle extends QuickMenuToggle {
+    _init() {
+      super._init({ title: "Perf Mode" });
 
       this._profileItems = new Map();
       this._activeProfile = null;
@@ -65,48 +71,60 @@ const GpuProfilesToggle = GObject.registerClass(
         this._sync();
       });
 
-      this._path = path;
-      this._activeProfile = null;
-
-      this.headerIcon = Gio.icon_new_for_string(
-        `${this._path}/ico/pci-card-symbolic.svg`
-      );
+      // 使用系统图标作为 header 图标
       this._profileSection = new PopupMenu.PopupMenuSection();
       this.menu.addMenuItem(this._profileSection);
-      this.menu.setHeader(this.headerIcon, "GPU Mode");
+      this.menu.setHeader("preferences-system-symbolic", "Perf Mode");
       this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
       // Fetch supported and current profiles
       this._fetchSupportedProfiles();
 
-      // Subscribe to DBus signal for GPU mode changes
+      // Subscribe to DBus signal for Perf mode changes
       this._subscribeToDBus();
     }
 
     _subscribeToDBus() {
-      this._dbusConnection = Gio.DBus.system; // Use the system bus
+      // asusd 使用标准的 PropertiesChanged 信号而非自定义信号
+      // 当 PlatformProfile 属性变化时触发
+      this._dbusConnection = Gio.DBus.system;
       this._signalId = this._dbusConnection.signal_subscribe(
-        "org.supergfxctl.Daemon",      // Sender (service) name
-        "org.supergfxctl.Daemon",      // Interface name
-        "NotifyGfx",                   // Signal name
-        "/org/supergfxctl/Gfx",        // Object path
-        null,                          // No argument filter
+        DBUS_NAME,                              // 服务名: xyz.ljones.Asusd
+        "org.freedesktop.DBus.Properties",      // 标准属性变化接口
+        "PropertiesChanged",                    // 信号名
+        DBUS_PATH,                              // 对象路径: /xyz/ljones
+        null,
         Gio.DBusSignalFlags.NONE,
         (connection, senderName, objectPath, interfaceName, signalName, parameters) => {
-          // The signal carries the new mode as a number.
-          // Log the numeric value and then refresh the current profile.
-          let newMode = parameters.deep_unpack()[0];
-          console.log(`NotifyGfx signal received, new mode index: ${newMode}`);
-          this._fetchCurrentProfile();
+          // PropertiesChanged 信号参数: (interface_name, changed_properties, invalidated_properties)
+          let [iface, changedProps, invalidatedProps] = parameters.deep_unpack();
+
+          // 只处理 Platform 接口的变化
+          if (iface !== DBUS_INTERFACE) return;
+
+          // 检查 PlatformProfile 是否变化
+          if ("PlatformProfile" in changedProps) {
+            let newProfileValue = changedProps["PlatformProfile"].deep_unpack();
+            let newProfile = PROFILE_VALUE_MAP[newProfileValue];
+            console.log(`PropertiesChanged: PlatformProfile = ${newProfileValue} (${newProfile})`);
+            if (newProfile) {
+              this._setActiveProfile(newProfile);
+            }
+          }
         }
       );
     }
 
     _fetchSupportedProfiles() {
+      // asusctl profile -l 输出格式:
+      // Starting version 6.2.0
+      // Quiet
+      // Balanced
+      // Performance
       this._executeCommandWithRetry(
-        ["supergfxctl", "-s"],
+        ["asusctl", "profile", "-l"],
         (stdout) => {
-          const supportedProfiles = this._parseSupportedProfiles(stdout.trim());
+          const supportedProfiles = this._parseSupportedProfiles(stdout);
           this._addProfileToggles(supportedProfiles);
           this._fetchCurrentProfile();
         },
@@ -115,7 +133,7 @@ const GpuProfilesToggle = GObject.registerClass(
             "Failed to fetch supported profiles after multiple attempts"
           );
           // Fallback: use all defined profiles.
-          this._addProfileToggles(Object.keys(GPU_PROFILE_PARAMS));
+          this._addProfileToggles(Object.keys(PERF_PROFILE_PARAMS));
           this._fetchCurrentProfile();
         }
       );
@@ -123,34 +141,67 @@ const GpuProfilesToggle = GObject.registerClass(
 
     _parseSupportedProfiles(output) {
       try {
-        // Remove brackets/spaces and split on comma
-        return output.replace(/[\[\]\s]/g, "").split(",");
+        // 输出格式: 每行一个 profile，第一行是版本信息
+        // Starting version 6.2.0
+        // Quiet
+        // Balanced
+        // Performance
+        const lines = output.trim().split("\n");
+        // 过滤掉版本信息行和空行，只保留有效的 profile 名称
+        return lines
+          .filter(line => {
+            const trimmed = line.trim();
+            return trimmed && !trimmed.startsWith("Starting version");
+          })
+          .map(line => line.trim());
       } catch (e) {
         console.error(`Error parsing supported profiles: ${e.message}`);
-        return Object.keys(GPU_PROFILE_PARAMS);
+        return Object.keys(PERF_PROFILE_PARAMS);
       }
     }
 
     _fetchCurrentProfile() {
+      // asusctl profile -p 输出格式:
+      // Starting version 6.2.0
+      // Active profile is Quiet
+      // Profile on AC is Performance
+      // Profile on Battery is Quiet
       this._executeCommandWithRetry(
-        ["supergfxctl", "-g"],
+        ["asusctl", "profile", "-p"],
         (stdout) => {
-          let profile = stdout.trim();
-          if (profile in GPU_PROFILE_PARAMS) {
+          const profile = this._parseCurrentProfile(stdout);
+          if (profile && profile in PERF_PROFILE_PARAMS) {
             this._setActiveProfile(profile);
           } else {
             console.error(`Unknown profile returned: ${profile}`);
-            // Fallback to a default profile
-            this._setActiveProfile("Hybrid");
+            this._setActiveProfile("Balanced");
           }
         },
         () => {
           console.error(
             "Failed to fetch current profile after multiple attempts"
           );
-          this._setActiveProfile("Hybrid");
+          this._setActiveProfile("Balanced");
         }
       );
+    }
+
+    _parseCurrentProfile(output) {
+      try {
+        // 查找 "Active profile is XXX" 这一行
+        const lines = output.trim().split("\n");
+        for (const line of lines) {
+          const match = line.match(/^Active profile is (\w+)/);
+          if (match) {
+            return match[1]; // 返回 profile 名称
+          }
+        }
+        console.error("Could not find 'Active profile is' in output");
+        return null;
+      } catch (e) {
+        console.error(`Error parsing current profile: ${e.message}`);
+        return null;
+      }
     }
 
     _executeCommandWithRetry(command, onSuccess, onFailure, retryCount = 0) {
@@ -205,8 +256,8 @@ const GpuProfilesToggle = GObject.registerClass(
 
     _addProfileToggles(supportedProfiles) {
       for (const profile of supportedProfiles) {
-        if (GPU_PROFILE_PARAMS[profile]) {
-          const params = GPU_PROFILE_PARAMS[profile];
+        if (PERF_PROFILE_PARAMS[profile]) {
+          const params = PERF_PROFILE_PARAMS[profile];
           const item = new PopupMenu.PopupImageMenuItem(
             params.name,
             params.iconName
@@ -226,20 +277,20 @@ const GpuProfilesToggle = GObject.registerClass(
         console.log(`Profile ${profile} is already active. Skipping activation.`);
         return;
       }
-
-      if (
-        (profile === "Vfio" && this._activeProfile === "Hybrid") ||
-        (profile === "Hybrid" && this._activeProfile === "Vfio")
-      ) {
-        console.error(
-          "Direct switching between Vfio and Hybrid profiles is not supported."
-        );
-        Main.notify(
-          "GPU Switcher",
-          "Direct switching between Vfio and Hybrid profiles is not supported. Please switch to Integrated first."
-        );
-        return;
-      }
+      //
+      // if (
+      //   (profile === "Performance" && this._activeProfile === "Balanced") ||
+      //   (profile === "Balanced" && this._activeProfile === "Performance")
+      // ) {
+      //   console.error(
+      //     "Direct switching between Vfio and Balanced profiles is not supported."
+      //   );
+      //   Main.notify(
+      //     "Perf Switcher",
+      //     "Direct switching between Vfio and Balanced profiles is not supported. Please switch to Integrated first."
+      //   );
+      //   return;
+      // }
 
       this._executeCommandWithRetry(
         ["sh", "-c", command],
@@ -247,17 +298,17 @@ const GpuProfilesToggle = GObject.registerClass(
           console.log(`Profile ${profile} activated successfully`);
           const previousProfile = this._activeProfile;
           this._setActiveProfile(profile);
-          if (
-            (previousProfile === "Integrated" && profile === "Hybrid") ||
-            (previousProfile === "Hybrid" && profile === "Integrated")
-          ) {
-            Util.spawnCommandLine("gnome-session-quit --logout");
-          }
+          // if (
+          //   (previousProfile === "Integrated" && profile === "Balanced") ||
+          //   (previousProfile === "Balanced" && profile === "Integrated")
+          // ) {
+          //   Util.spawnCommandLine("gnome-session-quit --logout");
+          // }
         },
         () => {
           console.error(`Failed to activate profile ${profile} after multiple attempts`);
           Main.notify(
-            "GPU Switcher",
+            "Perf Switcher",
             `Failed to switch to ${profile} profile. Please try again or check system logs.`
           );
         }
@@ -265,7 +316,7 @@ const GpuProfilesToggle = GObject.registerClass(
     }
 
     _setActiveProfile(profile) {
-      if (GPU_PROFILE_PARAMS[profile]) {
+      if (PERF_PROFILE_PARAMS[profile]) {
         console.log(`Setting active profile: ${profile}`);
         this._activeProfile = profile;
         this.notify("active-profile");
@@ -282,10 +333,10 @@ const GpuProfilesToggle = GObject.registerClass(
     _sync() {
       console.log(`Synchronizing profile: ${this._activeProfile}`);
 
-      const params = GPU_PROFILE_PARAMS[this._activeProfile];
+      const params = PERF_PROFILE_PARAMS[this._activeProfile];
       if (!params) {
         console.error(
-          `Active profile ${this._activeProfile} is not defined in GPU_PROFILE_PARAMS.`
+          `Active profile ${this._activeProfile} is not defined in PERF_PROFILE_PARAMS.`
         );
         return;
       }
@@ -299,7 +350,7 @@ const GpuProfilesToggle = GObject.registerClass(
       }
 
       this.set({ subtitle: params.name, iconName: params.iconName });
-      this.checked = this._activeProfile !== "Hybrid";
+      this.checked = this._activeProfile !== "Balanced";
     }
 
     destroy() {
@@ -315,15 +366,15 @@ const GpuProfilesToggle = GObject.registerClass(
 
 export const Indicator = GObject.registerClass(
   class Indicator extends SystemIndicator {
-    _init(path) {
+    _init() {
       super._init();
 
       this._indicator = this._addIndicator();
-      this._indicator.icon_name = "video-display-symbolic"; // Default icon
+      this._indicator.icon_name = "power-profile-balanced-symbolic"; // Default icon
       this.indicatorIndex = 0;
 
       // Create the quick settings toggle
-      this._toggle = new GpuProfilesToggle(path);
+      this._toggle = new PerfProfilesToggle();
       this.quickSettingsItems.push(this._toggle);
 
       this._toggle.connect(
@@ -350,8 +401,8 @@ export const Indicator = GObject.registerClass(
 
     _updateIcon() {
       const activeProfile = this._toggle.activeProfile;
-      if (activeProfile && GPU_PROFILE_PARAMS[activeProfile]) {
-        const params = GPU_PROFILE_PARAMS[activeProfile];
+      if (activeProfile && PERF_PROFILE_PARAMS[activeProfile]) {
+        const params = PERF_PROFILE_PARAMS[activeProfile];
         this._indicator.icon_name = params.iconName;
         this._indicator.visible = true;
       } else {
@@ -363,9 +414,9 @@ export const Indicator = GObject.registerClass(
   }
 );
 
-export default class GpuSwitcherExtension extends Extension {
+export default class PerfSwitcherExtension extends Extension {
   enable() {
-    this._indicator = new Indicator(this.path);
+    this._indicator = new Indicator();
     Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
   }
 

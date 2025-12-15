@@ -1,13 +1,12 @@
 {
-  "uuid": "gpu-switcher-supergfxctl@chikobara.github.io",
-  "name": "GPU Supergfxctl Switch",
-  "description": "Simple GPU Profile switcher Gnome-Shell-Extension for ASUS laptops using Supergfxctl",
+  "uuid": "perf-switcher-asusctl@rea1-ms",
+  "name": "Perf-Switcher-Asusctl",
+  "description": "Simple Performance Profile switcher Gnome-Shell-Extension for ASUS laptops using asusctl",
   "shell-version": [
-    "49",
-    "48",
+    "46",
     "47",
-    "46"
+    "48",
+    "49"
   ],
-  "url": "https://github.com/chikobara/GPU-Switcher-Supergfxctl",
-  "version": 11
+  "url": "https://github.com/Rea1-ms/Perf-Switcher-Asusctl"
 }
