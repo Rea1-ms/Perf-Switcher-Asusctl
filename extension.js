@@ -1,13 +1,11 @@
 import GLib from "gi://GLib";
 import Gio from "gi://Gio";
-import St from "gi://St";
 import GObject from "gi://GObject";
 import {
   QuickMenuToggle,
   SystemIndicator,
 } from "resource:///org/gnome/shell/ui/quickSettings.js";
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
-import * as Util from "resource:///org/gnome/shell/misc/util.js";
 import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
 
@@ -15,37 +13,38 @@ const PERF_PROFILE_PARAMS = {
   Quiet: {
     name: "Quiet",
     iconName: "power-profile-power-saver-symbolic",
-    command: "asusctl profile -P Quiet",
   },
   Balanced: {
     name: "Balanced",
     iconName: "power-profile-balanced-symbolic",
-    command: "asusctl profile -P Balanced",
   },
   Performance: {
     name: "Performance",
     iconName: "power-profile-performance-symbolic",
-    command: "asusctl profile -P Performance",
   },
 };
 
 const RETRY_DELAY = 1000;
 const MAX_RETRIES = 3;
 
-// DBus 配置 - 通过 busctl 和 gdbus introspect 发现
-// busctl --system list | grep asus -> xyz.ljones.Asusd
-// gdbus introspect --system --dest xyz.ljones.Asusd --object-path / -> 完整接口树
+// DBus config - discovered via: busctl --system list | grep asus
+// Interface tree: gdbus introspect --system --dest xyz.ljones.Asusd --object-path /
 const DBUS_NAME = "xyz.ljones.Asusd";
 const DBUS_PATH = "/xyz/ljones";
 const DBUS_INTERFACE = "xyz.ljones.Platform";
 
-// Profile 数值映射 - 通过切换 profile 并读取 PlatformProfile 属性值确认
-// asusctl profile -P Balanced && gdbus call ... Get ... PlatformProfile -> 0
-// asusctl profile -P Performance -> 1, Quiet -> 2
+// Profile value mapping - confirmed by switching profiles and reading PlatformProfile
 const PROFILE_VALUE_MAP = {
   0: "Balanced",
   1: "Performance",
   2: "Quiet",
+};
+
+// Reverse mapping: profile name to DBus value
+const PROFILE_NAME_TO_VALUE = {
+  "Balanced": 0,
+  "Performance": 1,
+  "Quiet": 2,
 };
 
 const PerfProfilesToggle = GObject.registerClass(
@@ -71,42 +70,31 @@ const PerfProfilesToggle = GObject.registerClass(
         this._sync();
       });
 
-      // 使用系统图标作为 header 图标
       this._profileSection = new PopupMenu.PopupMenuSection();
       this.menu.addMenuItem(this._profileSection);
       this.menu.setHeader("preferences-system-symbolic", "Perf Mode");
       this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-      // Fetch supported and current profiles
       this._fetchSupportedProfiles();
-
-      // Subscribe to DBus signal for Perf mode changes
       this._subscribeToDBus();
     }
 
     _subscribeToDBus() {
-      // asusd 使用标准的 PropertiesChanged 信号而非自定义信号
-      // 当 PlatformProfile 属性变化时触发
       this._dbusConnection = Gio.DBus.system;
       this._signalId = this._dbusConnection.signal_subscribe(
-        DBUS_NAME,                              // 服务名: xyz.ljones.Asusd
-        "org.freedesktop.DBus.Properties",      // 标准属性变化接口
-        "PropertiesChanged",                    // 信号名
-        DBUS_PATH,                              // 对象路径: /xyz/ljones
+        DBUS_NAME,
+        "org.freedesktop.DBus.Properties",
+        "PropertiesChanged",
+        DBUS_PATH,
         null,
         Gio.DBusSignalFlags.NONE,
         (connection, senderName, objectPath, interfaceName, signalName, parameters) => {
-          // PropertiesChanged 信号参数: (interface_name, changed_properties, invalidated_properties)
-          let [iface, changedProps, invalidatedProps] = parameters.deep_unpack();
-
-          // 只处理 Platform 接口的变化
+          let [iface, changedProps] = parameters.deep_unpack();
           if (iface !== DBUS_INTERFACE) return;
 
-          // 检查 PlatformProfile 是否变化
           if ("PlatformProfile" in changedProps) {
             let newProfileValue = changedProps["PlatformProfile"].deep_unpack();
             let newProfile = PROFILE_VALUE_MAP[newProfileValue];
-            console.log(`PropertiesChanged: PlatformProfile = ${newProfileValue} (${newProfile})`);
             if (newProfile) {
               this._setActiveProfile(newProfile);
             }
@@ -116,11 +104,6 @@ const PerfProfilesToggle = GObject.registerClass(
     }
 
     _fetchSupportedProfiles() {
-      // asusctl profile -l 输出格式:
-      // Starting version 6.2.0
-      // Quiet
-      // Balanced
-      // Performance
       this._executeCommandWithRetry(
         ["asusctl", "profile", "-l"],
         (stdout) => {
@@ -129,10 +112,7 @@ const PerfProfilesToggle = GObject.registerClass(
           this._fetchCurrentProfile();
         },
         () => {
-          console.error(
-            "Failed to fetch supported profiles after multiple attempts"
-          );
-          // Fallback: use all defined profiles.
+          console.error("Failed to fetch supported profiles after multiple attempts");
           this._addProfileToggles(Object.keys(PERF_PROFILE_PARAMS));
           this._fetchCurrentProfile();
         }
@@ -141,13 +121,7 @@ const PerfProfilesToggle = GObject.registerClass(
 
     _parseSupportedProfiles(output) {
       try {
-        // 输出格式: 每行一个 profile，第一行是版本信息
-        // Starting version 6.2.0
-        // Quiet
-        // Balanced
-        // Performance
         const lines = output.trim().split("\n");
-        // 过滤掉版本信息行和空行，只保留有效的 profile 名称
         return lines
           .filter(line => {
             const trimmed = line.trim();
@@ -161,11 +135,6 @@ const PerfProfilesToggle = GObject.registerClass(
     }
 
     _fetchCurrentProfile() {
-      // asusctl profile -p 输出格式:
-      // Starting version 6.2.0
-      // Active profile is Quiet
-      // Profile on AC is Performance
-      // Profile on Battery is Quiet
       this._executeCommandWithRetry(
         ["asusctl", "profile", "-p"],
         (stdout) => {
@@ -178,9 +147,7 @@ const PerfProfilesToggle = GObject.registerClass(
           }
         },
         () => {
-          console.error(
-            "Failed to fetch current profile after multiple attempts"
-          );
+          console.error("Failed to fetch current profile after multiple attempts");
           this._setActiveProfile("Balanced");
         }
       );
@@ -188,12 +155,11 @@ const PerfProfilesToggle = GObject.registerClass(
 
     _parseCurrentProfile(output) {
       try {
-        // 查找 "Active profile is XXX" 这一行
         const lines = output.trim().split("\n");
         for (const line of lines) {
           const match = line.match(/^Active profile is (\w+)/);
           if (match) {
-            return match[1]; // 返回 profile 名称
+            return match[1];
           }
         }
         console.error("Could not find 'Active profile is' in output");
@@ -217,7 +183,6 @@ const PerfProfilesToggle = GObject.registerClass(
             if (ok) {
               onSuccess(stdout);
             } else if (retryCount < MAX_RETRIES) {
-              console.log(`Command failed, retrying in ${RETRY_DELAY}ms...`);
               this._retryTimeoutId = GLib.timeout_add(
                 GLib.PRIORITY_DEFAULT,
                 RETRY_DELAY,
@@ -263,8 +228,7 @@ const PerfProfilesToggle = GObject.registerClass(
             params.iconName
           );
           item.connect("activate", () => {
-            console.log(`Activating profile: ${profile}`);
-            this._activateProfile(profile, params.command);
+            this._activateProfile(profile);
           });
           this._profileItems.set(profile, item);
           this._profileSection.addMenuItem(item);
@@ -272,52 +236,48 @@ const PerfProfilesToggle = GObject.registerClass(
       }
     }
 
-    _activateProfile(profile, command) {
+    _activateProfile(profile) {
       if (profile === this._activeProfile) {
-        console.log(`Profile ${profile} is already active. Skipping activation.`);
         return;
       }
-      //
-      // if (
-      //   (profile === "Performance" && this._activeProfile === "Balanced") ||
-      //   (profile === "Balanced" && this._activeProfile === "Performance")
-      // ) {
-      //   console.error(
-      //     "Direct switching between Vfio and Balanced profiles is not supported."
-      //   );
-      //   Main.notify(
-      //     "Perf Switcher",
-      //     "Direct switching between Vfio and Balanced profiles is not supported. Please switch to Integrated first."
-      //   );
-      //   return;
-      // }
 
-      this._executeCommandWithRetry(
-        ["sh", "-c", command],
-        () => {
-          console.log(`Profile ${profile} activated successfully`);
-          const previousProfile = this._activeProfile;
-          this._setActiveProfile(profile);
-          // if (
-          //   (previousProfile === "Integrated" && profile === "Balanced") ||
-          //   (previousProfile === "Balanced" && profile === "Integrated")
-          // ) {
-          //   Util.spawnCommandLine("gnome-session-quit --logout");
-          // }
-        },
-        () => {
-          console.error(`Failed to activate profile ${profile} after multiple attempts`);
-          Main.notify(
-            "Perf Switcher",
-            `Failed to switch to ${profile} profile. Please try again or check system logs.`
-          );
+      const profileValue = PROFILE_NAME_TO_VALUE[profile];
+      if (profileValue === undefined) {
+        console.error(`Unknown profile: ${profile}`);
+        return;
+      }
+
+      // Use DBus to set PlatformProfile property
+      this._dbusConnection.call(
+        DBUS_NAME,
+        DBUS_PATH,
+        "org.freedesktop.DBus.Properties",
+        "Set",
+        new GLib.Variant("(ssv)", [
+          DBUS_INTERFACE,
+          "PlatformProfile",
+          new GLib.Variant("u", profileValue)
+        ]),
+        null,
+        Gio.DBusCallFlags.NONE,
+        -1,
+        null,
+        (connection, res) => {
+          try {
+            connection.call_finish(res);
+          } catch (e) {
+            console.error(`Failed to set profile via DBus: ${e.message}`);
+            Main.notify(
+              "Perf Switcher",
+              `Failed to switch to ${profile} profile. Please try again or check system logs.`
+            );
+          }
         }
       );
     }
 
     _setActiveProfile(profile) {
       if (PERF_PROFILE_PARAMS[profile]) {
-        console.log(`Setting active profile: ${profile}`);
         this._activeProfile = profile;
         this.notify("active-profile");
         this._sync();
@@ -331,13 +291,8 @@ const PerfProfilesToggle = GObject.registerClass(
     }
 
     _sync() {
-      console.log(`Synchronizing profile: ${this._activeProfile}`);
-
       const params = PERF_PROFILE_PARAMS[this._activeProfile];
       if (!params) {
-        console.error(
-          `Active profile ${this._activeProfile} is not defined in PERF_PROFILE_PARAMS.`
-        );
         return;
       }
 
@@ -359,6 +314,7 @@ const PerfProfilesToggle = GObject.registerClass(
         this._signalId = null;
       }
       this._clearRetryTimeout();
+      this._profileItems.clear();
       super.destroy();
     }
   }
@@ -370,10 +326,9 @@ export const Indicator = GObject.registerClass(
       super._init();
 
       this._indicator = this._addIndicator();
-      this._indicator.icon_name = "power-profile-balanced-symbolic"; // Default icon
+      this._indicator.icon_name = "power-profile-balanced-symbolic";
       this.indicatorIndex = 0;
 
-      // Create the quick settings toggle
       this._toggle = new PerfProfilesToggle();
       this.quickSettingsItems.push(this._toggle);
 
@@ -382,7 +337,6 @@ export const Indicator = GObject.registerClass(
         this._updateIcon.bind(this)
       );
 
-      // Insert the indicator into quick settings
       this._insertIndicator();
       this._updateIcon();
     }
@@ -394,8 +348,6 @@ export const Indicator = GObject.registerClass(
           this,
           this.indicatorIndex
         );
-      } else {
-        console.warn("Unable to insert indicator at specific index");
       }
     }
 
@@ -406,10 +358,14 @@ export const Indicator = GObject.registerClass(
         this._indicator.icon_name = params.iconName;
         this._indicator.visible = true;
       } else {
-        this._indicator.icon_name = "video-display-symbolic"; // Default icon
+        this._indicator.icon_name = "power-profile-balanced-symbolic";
         this._indicator.visible = true;
       }
-      console.log(`Updated icon: ${this._indicator.icon_name}, Visible: ${this._indicator.visible}`);
+    }
+
+    destroy() {
+      this._toggle?.destroy();
+      super.destroy();
     }
   }
 );
