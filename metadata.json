@@ -1,7 +1,7 @@
 {
   "uuid": "perf-switcher-asusctl@rea1-ms",
   "name": "Perf-Switcher-Asusctl",
-  "description": "Simple Performance Profile switcher Gnome-Shell-Extension for ASUS laptops using asusctl",
+  "description": "Simple Performance Profile switcher Gnome-Shell-Extension for ASUS laptops using asusctl.\n\nForked from GPU-Switcher-Supergfxctl by chikobara.\n\nThis extension is not affiliated, funded, or in any way associated with Asus.",
   "shell-version": [
     "46",
     "47",
