@@ -1,5 +1,7 @@
 # Perf-Switcher-Asusctl
 
+**This extension is not affiliated, funded, or in any way associated with Asus.**
+
 __Thanks to [chikobara](https://gitlab.com/chikobara) for the original [GPU-Switcher-Supergfxctl](https://github.com/chikobara/GPU-Switcher-Supergfxctl).__
 
 Simple Performance Profile switcher Gnome-Shell-Extension for ASUS laptops using asusctl
