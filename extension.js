@@ -24,9 +24,6 @@ const PERF_PROFILE_PARAMS = {
   },
 };
 
-const RETRY_DELAY = 1000;
-const MAX_RETRIES = 3;
-
 // DBus config - discovered via: busctl --system list | grep asus
 // Interface tree: gdbus introspect --system --dest xyz.ljones.Asusd --object-path /
 const DBUS_NAME = "xyz.ljones.Asusd";
@@ -65,7 +62,8 @@ const PerfProfilesToggle = GObject.registerClass(
 
       this._profileItems = new Map();
       this._activeProfile = null;
-      this._retryTimeoutId = null;
+      this._dbusConnection = Gio.DBus.system;
+
       this.connect("clicked", () => {
         this._sync();
       });
@@ -80,7 +78,6 @@ const PerfProfilesToggle = GObject.registerClass(
     }
 
     _subscribeToDBus() {
-      this._dbusConnection = Gio.DBus.system;
       this._signalId = this._dbusConnection.signal_subscribe(
         DBUS_NAME,
         "org.freedesktop.DBus.Properties",
@@ -104,119 +101,64 @@ const PerfProfilesToggle = GObject.registerClass(
     }
 
     _fetchSupportedProfiles() {
-      this._executeCommandWithRetry(
-        ["asusctl", "profile", "-l"],
-        (stdout) => {
-          const supportedProfiles = this._parseSupportedProfiles(stdout);
-          this._addProfileToggles(supportedProfiles);
-          this._fetchCurrentProfile();
-        },
-        () => {
-          console.error("Failed to fetch supported profiles after multiple attempts");
-          this._addProfileToggles(Object.keys(PERF_PROFILE_PARAMS));
-          this._fetchCurrentProfile();
+      // Get supported profiles via DBus PlatformProfileChoices property
+      this._dbusConnection.call(
+        DBUS_NAME,
+        DBUS_PATH,
+        "org.freedesktop.DBus.Properties",
+        "Get",
+        new GLib.Variant("(ss)", [DBUS_INTERFACE, "PlatformProfileChoices"]),
+        null,
+        Gio.DBusCallFlags.NONE,
+        -1,
+        null,
+        (connection, res) => {
+          try {
+            let result = connection.call_finish(res);
+            let profileValues = result.deep_unpack()[0].deep_unpack();
+            let supportedProfiles = profileValues
+              .map(v => PROFILE_VALUE_MAP[v])
+              .filter(p => p !== undefined);
+            this._addProfileToggles(supportedProfiles);
+            this._fetchCurrentProfile();
+          } catch (e) {
+            console.error(`Failed to fetch supported profiles: ${e.message}`);
+            this._addProfileToggles(Object.keys(PERF_PROFILE_PARAMS));
+            this._fetchCurrentProfile();
+          }
         }
       );
-    }
-
-    _parseSupportedProfiles(output) {
-      try {
-        const lines = output.trim().split("\n");
-        return lines
-          .filter(line => {
-            const trimmed = line.trim();
-            return trimmed && !trimmed.startsWith("Starting version");
-          })
-          .map(line => line.trim());
-      } catch (e) {
-        console.error(`Error parsing supported profiles: ${e.message}`);
-        return Object.keys(PERF_PROFILE_PARAMS);
-      }
     }
 
     _fetchCurrentProfile() {
-      this._executeCommandWithRetry(
-        ["asusctl", "profile", "-p"],
-        (stdout) => {
-          const profile = this._parseCurrentProfile(stdout);
-          if (profile && profile in PERF_PROFILE_PARAMS) {
-            this._setActiveProfile(profile);
-          } else {
-            console.error(`Unknown profile returned: ${profile}`);
-            this._setActiveProfile("Balanced");
-          }
-        },
-        () => {
-          console.error("Failed to fetch current profile after multiple attempts");
-          this._setActiveProfile("Balanced");
-        }
-      );
-    }
-
-    _parseCurrentProfile(output) {
-      try {
-        const lines = output.trim().split("\n");
-        for (const line of lines) {
-          const match = line.match(/^Active profile is (\w+)/);
-          if (match) {
-            return match[1];
-          }
-        }
-        console.error("Could not find 'Active profile is' in output");
-        return null;
-      } catch (e) {
-        console.error(`Error parsing current profile: ${e.message}`);
-        return null;
-      }
-    }
-
-    _executeCommandWithRetry(command, onSuccess, onFailure, retryCount = 0) {
-      try {
-        let proc = Gio.Subprocess.new(
-          command,
-          Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
-        );
-
-        proc.communicate_utf8_async(null, null, (proc, res) => {
+      // Get current profile via DBus PlatformProfile property
+      this._dbusConnection.call(
+        DBUS_NAME,
+        DBUS_PATH,
+        "org.freedesktop.DBus.Properties",
+        "Get",
+        new GLib.Variant("(ss)", [DBUS_INTERFACE, "PlatformProfile"]),
+        null,
+        Gio.DBusCallFlags.NONE,
+        -1,
+        null,
+        (connection, res) => {
           try {
-            let [ok, stdout, stderr] = proc.communicate_utf8_finish(res);
-            if (ok) {
-              onSuccess(stdout);
-            } else if (retryCount < MAX_RETRIES) {
-              this._retryTimeoutId = GLib.timeout_add(
-                GLib.PRIORITY_DEFAULT,
-                RETRY_DELAY,
-                () => {
-                  this._executeCommandWithRetry(
-                    command,
-                    onSuccess,
-                    onFailure,
-                    retryCount + 1
-                  );
-                  this._retryTimeoutId = null;
-                  return GLib.SOURCE_REMOVE;
-                }
-              );
+            let result = connection.call_finish(res);
+            let profileValue = result.deep_unpack()[0].deep_unpack();
+            let profile = PROFILE_VALUE_MAP[profileValue];
+            if (profile && profile in PERF_PROFILE_PARAMS) {
+              this._setActiveProfile(profile);
             } else {
-              console.error(`Command failed after ${MAX_RETRIES} attempts: ${stderr}`);
-              onFailure();
+              console.error(`Unknown profile value: ${profileValue}`);
+              this._setActiveProfile("Balanced");
             }
           } catch (e) {
-            console.error(`Error in command execution: ${e.message}`);
-            onFailure();
+            console.error(`Failed to fetch current profile: ${e.message}`);
+            this._setActiveProfile("Balanced");
           }
-        });
-      } catch (e) {
-        console.error(`Failed to execute command: ${e.message}`);
-        onFailure();
-      }
-    }
-
-    _clearRetryTimeout() {
-      if (this._retryTimeoutId !== null) {
-        GLib.source_remove(this._retryTimeoutId);
-        this._retryTimeoutId = null;
-      }
+        }
+      );
     }
 
     _addProfileToggles(supportedProfiles) {
@@ -313,7 +255,6 @@ const PerfProfilesToggle = GObject.registerClass(
         this._dbusConnection.signal_unsubscribe(this._signalId);
         this._signalId = null;
       }
-      this._clearRetryTimeout();
       this._profileItems.clear();
       super.destroy();
     }
